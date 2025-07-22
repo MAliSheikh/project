@@ -1,24 +1,23 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { getChatHistory, sendChatMessage } from '../services/api';
 import { useAuth } from './AuthContext';
 
-interface ChatMessage {
-  id?: number;
+interface BaseChatMessage {
   question: string;
   answer: string;
-  user_id?: string;
-  created_at?: string;
-  updated_at?: string | null;
-  isUser: boolean;
 }
 
-interface ApiResponse {
+interface ApiResponse extends BaseChatMessage {
   id: number;
-  question: string;
-  answer: string;
   user_id: string;
   created_at: string;
   updated_at: string | null;
+}
+
+interface ChatMessage extends Partial<ApiResponse> {
+  question: string;
+  answer: string;
+  isUser: boolean;
 }
 
 interface ChatContextType {
@@ -43,47 +42,52 @@ interface ChatProviderProps {
   children: ReactNode;
 }
 
-export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
+interface ChatResponse {
+  id?: number;
+  question: string;
+  answer: string;
+  user_id?: string;
+  created_at?: string;
+  updated_at?: string | null;
+}
+
+export const ChatProvider = ({ children }: ChatProviderProps): JSX.Element => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [historyFetched, setHistoryFetched] = useState(false);
   const { user, token } = useAuth();
 
-  const fetchHistory = async () => {
+  const fetchHistory = useCallback(async () => {
     if (!token || historyFetched) return;
     
     try {
       setIsLoading(true);
       const history = await getChatHistory(token) as ApiResponse[];
       
-      // Sort history by ID in ascending order
-      const sortedHistory = [...history].sort((a, b) => a.id - b.id);
-      
-      // Create pairs of messages (question and answer)
-      const formattedHistory: ChatMessage[] = [];
-      sortedHistory.forEach((item) => {
-        // Add user question
-        formattedHistory.push({
-          id: item.id,
-          question: item.question,
-          answer: "",
-          user_id: item.user_id,
-          created_at: item.created_at,
-          updated_at: item.updated_at,
-          isUser: true
-        });
-        
-        // Add bot answer
-        formattedHistory.push({
-          id: item.id,
-          question: item.question,
-          answer: item.answer,
-          user_id: item.user_id,
-          created_at: item.created_at,
-          updated_at: item.updated_at,
-          isUser: false
-        });
-      });
+      // Sort history by ID in ascending order (newest first)
+      // and create pairs of messages (user question and bot answer)
+      const formattedHistory: ChatMessage[] = history
+        .sort((a, b) => a.id - b.id)
+        .flatMap((item): [ChatMessage, ChatMessage] => [
+          {
+            id: item.id,
+            question: item.question,
+            answer: item.question, // Show question on the left side
+            user_id: item.user_id,
+            created_at: item.created_at,
+            updated_at: item.updated_at,
+            isUser: true
+          },
+          {
+            id: item.id,
+            question: item.question,
+            answer: item.answer, // Show answer on the left side
+            user_id: item.user_id,
+            created_at: item.created_at,
+            updated_at: item.updated_at,
+            isUser: false
+          }
+        ]);
       
       setMessages(formattedHistory);
       setHistoryFetched(true);
@@ -96,58 +100,66 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [token, historyFetched]);
 
-  const sendMessage = async (message: string) => {
+  const sendMessage = useCallback(async (message: string) => {
     const userMessage: ChatMessage = {
       question: message,
-      answer: '',
+      answer: message, // Show question in the answer field for user messages
       isUser: true,
       created_at: new Date().toISOString(),
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    setMessages((prevMessages) => [...prevMessages, userMessage]);
     setIsLoading(true);
 
     try {
-      const timeoutPromise = new Promise((_, reject) => 
+      const timeoutPromise = new Promise<never>((_, reject) => 
         setTimeout(() => reject(new Error('Request timeout')), 60000)
       );
       
       const response = await Promise.race([
         sendChatMessage(message, token!),
         timeoutPromise
-      ]);
+      ]) as unknown as ChatResponse;
       
       const botMessage: ChatMessage = {
-        ...response,
+        id: response.id,
+        question: message,
+        answer: response.answer,
+        user_id: response.user_id,
+        created_at: response.created_at || new Date().toISOString(),
+        updated_at: response.updated_at,
         isUser: false,
-        created_at: new Date().toISOString(),
       };
 
-      setMessages(prev => [...prev, botMessage]);
-    } catch (error) {
+      setMessages((prevMessages) => [...prevMessages, botMessage]);
+    } catch (error: unknown) {
       console.error('Failed to send message:', error);
-      if (error.message === 'Request timeout') {
+      if (error instanceof Error && error.message === 'Request timeout') {
         const timeoutMessage: ChatMessage = {
           question: message,
           answer: "The response is taking longer than expected. Please wait while I process your request...",
           isUser: false,
           created_at: new Date().toISOString(),
         };
-        setMessages(prev => [...prev, timeoutMessage]);
+        setMessages((prevMessages) => [...prevMessages, timeoutMessage]);
         
         try {
-          const response = await sendChatMessage(message, token!);
+          const response = await sendChatMessage(message, token!) as unknown as ChatResponse;
           const botMessage: ChatMessage = {
-            ...response,
+            id: response.id,
+            question: message,
+            answer: response.answer,
+            user_id: response.user_id,
+            created_at: response.created_at || new Date().toISOString(),
+            updated_at: response.updated_at,
             isUser: false,
-            created_at: new Date().toISOString(),
           };
-          setMessages(prev => prev.map(msg => 
+          setMessages((prevMessages) => prevMessages.map((msg: ChatMessage) => 
             msg.answer === timeoutMessage.answer ? botMessage : msg
           ));
-        } catch (retryError) {
+        } catch (retryError: unknown) {
           console.error('Failed after retry:', retryError);
           const errorMessage: ChatMessage = {
             question: message,
@@ -155,7 +167,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
             isUser: false,
             created_at: new Date().toISOString(),
           };
-          setMessages(prev => prev.map(msg => 
+          setMessages((prevMessages) => prevMessages.map((msg: ChatMessage) => 
             msg.answer === timeoutMessage.answer ? errorMessage : msg
           ));
         }
@@ -166,12 +178,12 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
           isUser: false,
           created_at: new Date().toISOString(),
         };
-        setMessages(prev => [...prev, errorMessage]);
+        setMessages((prevMessages) => [...prevMessages, errorMessage]);
       }
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [token]);
 
   const clearChat = () => {
     setMessages([]);
@@ -181,7 +193,7 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
     if (user && token && !historyFetched) {
       fetchHistory();
     }
-  }, [user, token]);
+  }, [user, token, historyFetched, fetchHistory]);
 
   // Reset chat state on logout
   useEffect(() => {
