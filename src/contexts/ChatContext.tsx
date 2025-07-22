@@ -54,33 +54,44 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({ children }) => {
     
     try {
       setIsLoading(true);
-      const history = await getChatHistory(token);
+      const history = await getChatHistory(token) as ApiResponse[];
       
-      const formattedHistory: ChatMessage[] = history.map((item) => ({
-        ...item,
-        isUser: false,
-      }));
+      // Sort history by ID in ascending order
+      const sortedHistory = [...history].sort((a, b) => a.id - b.id);
+      
+      // Create pairs of messages (question and answer)
+      const formattedHistory: ChatMessage[] = [];
+      sortedHistory.forEach((item) => {
+        // Add user question
+        formattedHistory.push({
+          id: item.id,
+          question: item.question,
+          answer: "",
+          user_id: item.user_id,
+          created_at: item.created_at,
+          updated_at: item.updated_at,
+          isUser: true
+        });
+        
+        // Add bot answer
+        formattedHistory.push({
+          id: item.id,
+          question: item.question,
+          answer: item.answer,
+          user_id: item.user_id,
+          created_at: item.created_at,
+          updated_at: item.updated_at,
+          isUser: false
+        });
+      });
       
       setMessages(formattedHistory);
       setHistoryFetched(true);
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Failed to fetch chat history:', error);
-      // Fallback to dummy data if API is down
-      const dummyMessages: ChatMessage[] = [
-        {
-          id: 1,
-          question: "What are the mid-term exam dates?",
-          answer: "According to the academic calendar, the Mid Term Examination for Summer 2025 is scheduled to take place from Monday, August 04 to Sunday, August 10, 2025.",
-          isUser: true,
-        },
-        {
-          id: 1,
-          question: "What are the mid-term exam dates?",
-          answer: "According to the academic calendar, the Mid Term Examination for Summer 2025 is scheduled to take place from Monday, August 04 to Sunday, August 10, 2025.",
-          isUser: false,
-        }
-      ];
-      setMessages(dummyMessages);
+      const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+      console.error(errorMessage);
+      setMessages([]);
       setHistoryFetched(true);
     } finally {
       setIsLoading(false);
